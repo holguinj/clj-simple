@@ -1,35 +1,14 @@
 (ns clj-simple.core
-  (:require [clojure.string :as s]
-            [clojure.walk :refer [postwalk]]
-            [clj-http.client :as http]
+  (:require [clj-http.client :as http]
             [clj-http.cookies :as cookies]
-            [cheshire.core :as json]))
+            [cheshire.core :as json]
+            [clj-simple.util :refer [json-key->clj-key convert-amounts get-csrf login-succeeded?]]))
 
 (def ^:const base-url "https://bank.simple.com")
 
-(def json-key->clj-key
-  "Given a string, replaces any underscores with dashes and then
-  converts it into a keyword."
-  (comp keyword #(s/replace % "_" "-")))
-
-(defn- balance-walker
-  "This function is intended to be used with postwalk to convert the
-  balances returned from simple.com into dollar amounts."
-  [x]
-  (if (integer? x)
-    (float (/ x 10000))
-    x))
-
-(defn get-csrf
-  "Returns a new CSRF token from simple.com. Should (probably) be
-  called with *cookie-store* bound to something that you'll keep a
-  reference to."
-  []
-  (let [body (-> "https://bank.simple.com" http/get :body)]
-    (last (re-find #"<input value=\"(.+)\" name=\"_csrf" body))))
-
 (defprotocol ISimpleAccount
   (balances [this] "Return the current balance for this account.")
+  (card [this] "Returns general information about the status of the card associated with the logged-in account.")
   (logout [this] "Log this account out of simple.com."))
 
 (deftype Account [cookie-jar csrf-token]
@@ -41,7 +20,7 @@
                                     :X-CSRF-Token (.csrf-token this)}
                           :cookie-store (.cookie-jar this)})
           balances (json/decode (:body resp) json-key->clj-key)]
-      (postwalk balance-walker balances)))
+      (convert-amounts balances)))
 
   (logout [this]
     (let [resp (http/get (str base-url "/signout")
@@ -65,5 +44,14 @@
                                            :_csrf token}
                              :headers {:X-CSRF-Token token}
                              :cookie-store new-jar})]
-        (if (= 200 (:status resp))
+        (if (login-succeeded? resp)
           (Account. new-jar token))))))
+
+(comment
+  (defn GET [acct endpoint]
+    (let [url (str base-url endpoint)
+          opts {:headers {:X-CSRF-Token (.csrf-token acct)}
+                :cookie-store (.cookie-jar acct)}
+          resp (http/get url opts)]
+      (json/decode (:body resp) json-key->clj-key)))
+  )
